@@ -14,6 +14,14 @@ modprobe bcm2835-v4l2
 
 Then run: `python3 main.py`
 
+# Usage
+
+It's not very user-friendly yet.
+
+`Ctrl-C` will make it shutdown gracefully.
+
+Look for `width`, `height` and `fps` variables in `main.py`. Line 377. Edit to your liking.
+
 # Miscellaneous Notes
 
 check ffmpeg codecs for h264 and omx for hardware accelerated encoding on the raspi:
