@@ -1,0 +1,14 @@
+[Unit]
+Description=RaspberryPi HD Surveillance
+After=network.target
+
+[Service]
+User=pi
+Group=pi
+WorkingDirectory=/home/pi
+SyslogIdentifier=surveillance
+ExecStart=/usr/bin/python3 -u /home/pi/full.py
+Restart=always
+
+[Install]
+WantedBy=multi-user.tar
