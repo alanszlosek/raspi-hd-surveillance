@@ -12,7 +12,17 @@ modprobe bcm2835-v4l2
 # add that module to /etc/modules-load.d/modules.conf
 ```
 
-Then run: `python3 main.py`
+## Running standalone
+
+Run: `python3 main.py`
+
+## Running as a daemon
+
+1. Copy the surveillance.service systemd unit file somewhere ... TODO: check on the recommended location for raspbian
+1. `systemctl daemon-reload` - to pick up the unit file
+1. `systemctl enable surveillance` - to enable the service at boot
+1. `systemctl start surveillance` - to run the daemon now
+
 
 # Usage
 
