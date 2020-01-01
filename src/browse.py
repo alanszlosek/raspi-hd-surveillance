@@ -2,6 +2,20 @@ import glob
 import json
 import os
 
+notes = """
+TODO
+
+* convert this to a flask app so we can fetch video JSON via API call
+* return main HTML for / request
+* /videos.json
+* POST /delete/video
+    * this one will simply move the video to a "deleted" folder
+    * we don't actually want ot delete
+    * need to sanitize path to only include alphanum and an extension
+    * trigger soft delete via the delete key .... set those videos to have a red background
+    * trap backspace so we don't actually go back
+"""
+
 header = """
 <!DOCTYPE html>
 <html lang="en">
@@ -233,6 +247,23 @@ Questions
 
 */
 var handlers = {
+    keydown: {
+        body: function(e) {
+            console.log(e)
+            // left arrow
+            switch (e.keyCode) {
+                // backspace
+                case 8:
+                    e.preventDefault();
+                    e.stopPropagation();
+                    break;
+                // delete
+                case 46:
+                    e.preventDefault();
+                    break;
+            }
+        }
+    },
     keyup: {
         body: function(e) {
             console.log(e)
@@ -281,8 +312,8 @@ for (var i in videos) {
         tag('div',
             {},
             videoTag,
-            video,
-            '#tags'
+            tag('div', {}, video),
+            tag('div', {}, '#tags')
         )
     );
     queue.push(videoTag);
