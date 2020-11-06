@@ -11,4 +11,4 @@ ExecStart=/usr/bin/python3 -u /home/pi/main.py
 Restart=always
 
 [Install]
-WantedBy=multi-user.tar
+WantedBy=multi-user.target
