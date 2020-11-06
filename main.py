@@ -1,10 +1,13 @@
 import cv2
 import datetime
+import fcntl
 import http.server
 import io
 import json
 import math
 import numpy
+import os
+import pathlib
 import signal
 from socketserver import ThreadingMixIn
 import subprocess
@@ -23,8 +26,8 @@ class Info(threading.Thread):
 
     def run(self):
         while self.running:
-            print("MJPEG Streamers: %d" % len(self.streams))
-            time.sleep(1)
+            #print("MJPEG Streamers: %d" % len(self.streams))
+            time.sleep(60)
 
     def done(self):
         self.running = False
@@ -80,6 +83,30 @@ class ToVideo(threading.Thread):
         videoWriter = None
         videoWriterOutput = ''
 
+        def setNonBlocking(fd):
+            """
+            Set the file description of the given file descriptor to non-blocking.
+            """
+            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+            flags = flags | os.O_NONBLOCK
+            fcntl.fcntl(fd, fcntl.F_SETFL, flags)
+
+        def handleOutput(videoWriter):
+            #stdout, stderr = videoWriter.communicate()
+            try:
+                stdout = videoWriter.stdout.read()
+                if stdout and len(stdout) > 0:
+                    print('ffmpeg stdout: ' + stdout.decode('utf-8'))
+            except IOError:
+                stdout = False
+
+            try:
+                stderr = videoWriter.stderr.read()
+                if stderr and len(stderr) > 0:
+                    print('ffmpeg stderr: ' + stderr.decode('utf-8'))
+            except IOError:
+                stderr = False
+
         while self.running == True:
             # Wait until we get the signal that there is work to do
             # This may be frames present, or cleanup work
@@ -92,44 +119,45 @@ class ToVideo(threading.Thread):
 
                 if isinstance(frame, str):
                     # start of video
-                    filename = 'videos/' + frame + '.mp4'
+                    subfolder = 'videos/' + frame[0:8]
+                    pathlib.Path(subfolder).mkdir(parents=True, exist_ok=True)
+
+                    filename = subfolder + '/' + frame + '.mp4'
                     # These ffmpeg args work well for 720p@20
-                    args = ['ffmpeg', '-s', '%dx%d' % (self.width, self.height), '-f', 'image2pipe', '-framerate', str(self.fps), '-i', 'pipe:0', '-c:v', 'libx264', '-crf', '23', '-preset', 'ultrafast', '-movflags', '+faststart', '-threads', '3', filename]
+                    args = ['ffmpeg', '-loglevel', 'warning', '-s', '%dx%d' % (self.width, self.height), '-f', 'image2pipe', '-framerate', str(self.fps), '-i', 'pipe:0', '-c:v', 'libx264', '-crf', '23', '-preset', 'ultrafast', '-movflags', '+faststart', '-threads', '3', filename]
                     print("Saving to %s" % filename)
                     videoWriter = subprocess.Popen(args, bufsize=0, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    setNonBlocking(videoWriter.stdout)
+                    setNonBlocking(videoWriter.stderr)
+                    handleOutput(videoWriter)
+
                 elif frame == False:
                     # end of video
-                    # Close Video Writer
-                    #videoWriter.wait()
-                    videoWriterOutput, errs = videoWriter.communicate()
-                    # TODO: printing these might not be necessary
-                    #print(videoWriterOutput)
-                    #print(errs)
+                    # Does this need to happen after close?
+                    handleOutput(videoWriter)
 
                     print('Finished writing video')
                     videoWriter.stdin.close()
                     videoWriter.stdout.close()
                     videoWriter.stderr.close()
+
                     # TODO: we should really wait until ffmpeg is done before continuing, but need to handle terminating it too
                     #videoWriter.wait()
                     videoWriterOutput = ''
                     videoWriter = None
                 else:
                     # standard frame, keep pushing to ffmpeg
-                    #outs, errs = videoWriter.communicate(input=currentFrame)
-                    #outs, errs = videoWriter.communicate()
-                    #print(outs, errs)
                     toBeWritten = len(frame)
                     written = videoWriter.stdin.write(frame)
                     if written != toBeWritten:
                         print('ERROR: Tried to send %d bytes to ffmpeg, but only sent %d.' % (toBeWritten, written))
+                    handleOutput(videoWriter)
 
         print('ToVideo exiting')
         # we are no longer running, so close the handle to ffmpeg
         if videoWriter:
-            videoWriterOutput, errs = videoWriter.communicate()
-            print(videoWriterOutput)
-            print(errs)
+            #handleOutput(videoWriter)
+
             videoWriter.stdin.close()
             videoWriter.stdout.close()
             videoWriter.stderr.close()
@@ -307,6 +335,11 @@ html, body, div,img {
 div {
     width: 100%;
 }
+img {
+    display: block;
+    margin-left: auto;
+    margin-right: auto;
+}
 #status {
     height: 10px;
 }
@@ -336,7 +369,7 @@ div {
     <div data-handleClass="nav" data-action="detect">Pixels</div>
 </div>
 <div>
-    <img src="/stream.mjpeg" width="100%" id="img" />
+    <img src="/stream.mjpeg" id="img" />
 </div>
 <script>
 var ajaxGet = function(url, callback) {
@@ -530,6 +563,12 @@ setInterval(
     },
     2000
 );
+
+handles.img.addEventListener('click', function(event) {
+    var target = event.target;
+    console.log(event.clientX - target.offsetLeft + window.scrollX);
+    console.log(event.clientY - target.offsetTop + window.scrollY);
+});
 </script>
 
 </body>
@@ -718,7 +757,15 @@ settings = {
         # left half
         #[0, 0, 640, 720]
         # top half
-        #[0, 0, 1280, 360]
+        #[0, 0, 1280, 410],
+        
+        [0, 0, 143, 490],
+        [143, 0, 240, 420],
+        [240, 0, 335, 433],
+        [335, 0, 498, 400],
+        [498, 0, 1280, 346],
+
+        [0, 513, 1280, 720]
         # number region
         #[0, 0, 1280, 50]
     ]
