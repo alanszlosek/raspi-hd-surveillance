@@ -32,10 +32,10 @@ import urllib
 # default settings
 # if config.json is present, we'll use those
 settings = {
-    'fps': 30,
+    'fps': 10,
     'width': 1920,
     'height': 1088,
-    #'fps': 20,
+    #'fps': 30,
     #'width': 1280,
     #'height': 720,
     'sensitivityPercentage': 0.2,
@@ -44,15 +44,8 @@ settings = {
     # but leaving this at 0.3 should take care of both
     'secondsBetweenDetection': 0.3,
     'ignore': [
-        # for 720
-        #[0, 0, 227, 396],
-        #[227, 0, 1280, 340],
-        #[0, 443, 1280, 720]
-        # just ignore the top edge for testing
-        #[0, 0, 1280, 100]
-        # for 1080
-	[0, 0, 1920, 662],
-        [0, 775, 1920, 1088]
+        [0, 0, 1920, 669],
+        [0, 808, 1920, 1088]
     ]
 }
 prior_image = None
@@ -171,7 +164,7 @@ class MotionDetection:
                 t = time.time()
                 if t > cutoff:
                     # detection
-                    print(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f'))
+                    #print(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f'))
                     self._detect(t)
                     if self.motionDetected:
                         break
@@ -209,7 +202,8 @@ class MotionDetection:
 
 
         if self.previous is None:
-            self.previous = self.grayscale.copy()
+            self.previous = numpy.empty( (self.settings['height'], self.settings['width']), dtype=numpy.uint8)
+            numpy.copyto(self.previous, self.grayscale)
             return False
 
         cv2.absdiff(self.previous, self.grayscale, dst=self.diff)
@@ -235,7 +229,7 @@ class MotionDetection:
             # the thought is that we want to detect very slow moving objects ... objects that might not trigger 2% of pixel changes within 1/3 second
             # but that might over a longer time frame
             # Use current frame in next comparison
-            self.previous = self.grayscale.copy()
+            numpy.copyto(self.previous, self.grayscale)
         # End conditional frame comparison logic
 
         if self.motionDetected and self.stopRecordingAfterTimestamp < currentFrameTimestamp:
@@ -396,7 +390,7 @@ class Streamer(threading.Thread):
     def __init__(self):
         threading.Thread.__init__(self)
         self.outputs = []
-        self.httpd = http.server.ThreadingHTTPServer(('0.0.0.0', 8080), requestHandler)
+        self.httpd = http.server.HTTPServer(('0.0.0.0', 8080), requestHandler)
         self.httpd.still = None
         self.httpd.motion = None
         self.start()
@@ -452,7 +446,9 @@ with picamera.PiCamera() as camera:
     streamer = Streamer()
 
     stream = picamera.PiCameraCircularIO(camera, seconds=2)
-    camera.start_recording(stream, format='h264', bitrate=0, quality=20)
+    # have a hunch that modifying the bitrate or quality doesn't jive with the circular buffer ... noticed buffer/cache values
+    # rising forever in top, and that makes me think mismatch or memory leak
+    camera.start_recording(stream, format='h264') #, bitrate=0, quality=20)
     while running:
         try:
             camera.wait_recording(0.1) #settings['secondsBetweenDetection'])
@@ -487,7 +483,7 @@ with picamera.PiCamera() as camera:
             print('Motion stopped!')
 
             # Write the frames from "before" motion to disk as well
-            stream.copy_to('%s/%s_before.h264' % (subfolder, filename), seconds=2)
+            stream.copy_to('%s/%s_before.h264' % (subfolder, filename)) #, seconds=2)
             stream.clear()
             camera.split_recording(stream)
     camera.stop_recording()
