@@ -96,8 +96,10 @@ class SplitFrames(object):
             print('buffer does not start with')
         self.stream.write(buf)
 
-class MotionDetection:
+class MotionDetection(threading.Thread):
     def __init__(self, camera, settings):
+        threading.Thread.__init__(self)
+        self.running = True
         self.camera = camera
         self.settings = settings
 
@@ -127,6 +129,8 @@ class MotionDetection:
 
         self.config(settings)
 
+        self.start()
+
     def config(self, settings):
         # TODO: I'm fuzzy on this, fix it
         self.sensitivityPercentage = self.settings['sensitivityPercentage'] / 100
@@ -147,48 +151,24 @@ class MotionDetection:
                 y += 1
 
 
-    def detect(self, camera, continuous=False):
-        global running
+    def run(self):
         global streamer
         self.camera.annotate_text = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        t = time.time()
+        cutoff = t + self.settings['secondsBetweenDetection']
+        for foo in self.camera.capture_continuous(self.buffer, format='jpeg', use_video_port=True, quality=100):
+            if self.running == False:
+                break
 
-        if continuous:
+            streamer.httpd.still = self.buffer.buf
+
             t = time.time()
-            cutoff = t + self.settings['secondsBetweenDetection']
-            for foo in self.camera.capture_continuous(self.buffer, format='jpeg', use_video_port=True, quality=100):
-                if running == False:
-                    break
-
-                self.encodeStill()
-
-                t = time.time()
-                if t > cutoff:
-                    # detection
-                    #print(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f'))
-                    self._detect(t)
-                    if self.motionDetected:
-                        break
-                    cutoff = t + self.settings['secondsBetweenDetection']
-                self.camera.annotate_text = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
-        else:
-            print("SHOULD NOT GET HERE")
-            self.camera.capture(self.buffer, format='bgr', use_video_port=True)
-            self.encodeStill()
-            self._detect(time.time())
-
-        return self.motionDetected
-
-    def encodeStill(self):
-        global streamer
-        streamer.httpd.still = self.buffer.buf
-
-        return
-        result, encoded = cv2.imencode('.jpg', self.buffer)
-        if result:
-            streamer.httpd.still = encoded
-        else:
-            print('failed to encode to jpeg')
+            if t > cutoff:
+                # detection
+                print(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f'))
+                self._detect(t)
+                cutoff = t + self.settings['secondsBetweenDetection']
+            self.camera.annotate_text = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     def _detect(self, currentFrameTimestamp):
         #profile.begin('grayscale-diff-threshold')
@@ -241,7 +221,10 @@ class MotionDetection:
             # Log that we are no longer seeing motion
             self.motionDetected = False
 
-        return self.motionDetected
+
+    def done(self):
+        print('MotionDetection exiting')
+        self.running = False
 
 
 mjpeg_outputs = []
@@ -331,9 +314,11 @@ class requestHandler(http.server.BaseHTTPRequestHandler):
             try:
                 self.wfile.write(still)
             except BrokenPipeError as e:
+                print('BrokenPipeError')
                 # we don't care
                 a = True
             except ConnectionResetError as e:
+                print('COnnectionResetError')
                 # we don't care
                 a = True
             return
@@ -457,7 +442,7 @@ with picamera.PiCamera() as camera:
             print(str(e))
             break
 
-        if motionDetection.detect(camera, continuous=True):
+        if motionDetection.motionDetected:
             print('Motion detected!')
             # As soon as we detect motion, split the recording to
             # record the frames "after" motion
@@ -469,10 +454,10 @@ with picamera.PiCamera() as camera:
 
             # Wait until motion is no longer detected, then split
             # recording back to the in-memory circular buffer
-            while motionDetection.detect(camera, continuous=True):
+            # TODO: might need to do wait_recording somehow in detected()
+            while motionDetection.motionDetected:
                 if running == False:
                     break
-                # check for motion every second while we're recording to h264
                 try:
                     camera.wait_recording(0.1) #settings['secondsBetweenDetection'])
                 except picamera.PiCameraError as e:
@@ -483,9 +468,10 @@ with picamera.PiCamera() as camera:
             print('Motion stopped!')
 
             # Write the frames from "before" motion to disk as well
-            stream.copy_to('%s/%s_before.h264' % (subfolder, filename)) #, seconds=2)
+            stream.copy_to('%s/%s_before.h264' % (subfolder, filename), seconds=2)
             stream.clear()
             camera.split_recording(stream)
+    streamer.done()
+    motionDetection.done()
     camera.stop_recording()
 
-streamer.done()
