@@ -26,6 +26,7 @@ apt install python3-opencv
 
 # Option 2, if you encounter issues or memory leaks: use the newer opencv-python version from pip
 apt install python3-pip python3-picamera python3-numpy libopenjp2-7 libtiff5 libwebp6 libilmbase23 libopenexr23 libavcodec58 libswscale5 libavformat58 libgtk-3-0 libgtk-3-bin libgtk-3-common libatlas3-base
+# you can run this as the user you'll be running main.py as
 pip3 install opencv-python
 
 # If you've already enabled the camera via raspi-config you can skip this:
