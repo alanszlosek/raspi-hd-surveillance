@@ -1,12 +1,12 @@
 # Welcome
 
-This is a python script to convert a Raspberry Pi 3 (or newer) into a motion detection surveillance system.
+This is a python script to convert a Raspberry Pi 3, 4 or Zero into a motion detection surveillance system.
 
 With a raspi4 it can check for motion 3 times a second, output 1088p (not a typo) 30fps h264 files, all while keeping the CPU on a single core under 80%! This is a huge improvement over the previous version of this script. Hooray for picamera!
 
 It also serves a simple web UI (runs on port 8080) that allows you to watch the stream and see whether motion was detected. See a demo of the previous version here: https://www.youtube.com/watch?v=56VteHCRxhc
 
-I need to create a new post for the latest version, but you can ready about my journey to version 1 here: https://blog.alanszlosek.com/post/2019/11/raspi-hd-motion-detection-encoding-streaming/
+I need to create a new post for the latest version, but you can read about my journey to version 1 here: https://blog.alanszlosek.com/post/2019/11/raspi-hd-motion-detection-encoding-streaming/
 
 # Features
 
@@ -59,11 +59,6 @@ Admittedly, capturing videos on a single raspi is not very helpful. I haven't fi
   1. They are run through tensorflow object detection and each file is tagged in the database with the objects that were detected. We also capture stills during object detection so we can see the first frame that contains a detected object.
 1. I can use a simple webapp to quickly browse videos by tags, and easily cycle through videos using keyboard shortcuts
 
-I'm working on a unified dashboard that can show live streams from more than 1 camera at a time. It'll be simple: each node broadcasts itself via UDP to a central server. The server keeps inventory, and serves a simple HTML page with a grid for each camera node that's running.
+I'm working on a unified dashboard that can show live streams from more than 1 camera at a time. It'll be simple: each node broadcasts itself via UDP to a central Python daemon. The daemon keeps inventory, and serves a simple HTML page with a grid for each camera node that's running.
 
 I hope to release all of this tooling eventually.
-
-# Future Thoughts
-
-I'm curious whether we can use h264 instead of jpeg. Perhaps we can then simply ask ffmpeg to add an mp4 container.
-https://support.mozilla.org/en-US/kb/html5-audio-and-video-firefox#w_supported-formats
