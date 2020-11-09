@@ -16,85 +16,45 @@ import threading
 import time
 import urllib
 
-# to concat later, use concat protocol, which will allow you specify the framerate
-# ffmpeg -framerate 10 -i "concat:20201025060604_before.h264|20201025060604_after.h264" -c:v copy out.mp4 
+# Hi! Use this code to turn your Raspberry Pi into a surveillance camera.
+# It records h264 videos when motion is detected
+# It also contains a simple webpage where you can watch the live stream via JPEGs that refresh twice a second
+# 
+# Regarding the output video, you'll need to join the before and after files together files into a mp4 to view them. You can use ffmpeg to do this:
+# ffmpeg -framerate 10 -i "concat:20201025060604_before.h264|20201025060604_after.h264" -c:v copy 20201025060604.mp4 
 
-# raspi4 can handle 1088p 30fps and detect motion 2-3 times per second, while keeping CPU core around 80%
-# when motion is detected, encoding to h264 and checking for motion every second lets the CPU go under 60%
+# A raspi4 can handle 1088p () 30fps and detect motion 2-3 times per second, while keeping CPU core around 80%!
 
-# we convert frames to jpeg as quickly as we get them, which adds about 3% to CPU
-
-# UPDATE: 20201104
-# switched to pulling jpeg stills using capture_continuous
-# and now we get faster frames for streaming, AND 74% CPU. an improvement!
-
-
-# default settings
-# if config.json is present, we'll use those
+# Default settings. If config.json is present, we'll merge in those values on start.
 settings = {
-    'fps': 10,
+    # raspi4 settings
+    'fps': 30,
     'width': 1920,
     'height': 1088,
+    # raspi zero settings (IIRC)
     #'fps': 30,
     #'width': 1280,
     #'height': 720,
+
     'sensitivityPercentage': 0.2,
-    # pi4 can do 3 frames a second
-    # pizero can do 2
-    # but leaving this at 0.3 should take care of both
+    # Check for motion at this interval. 0.3 (three times a second) is often frequent enough to pick up cars on a residential road, but it depends on many things. You'll need to fiddle.
     'secondsBetweenDetection': 0.3,
     'ignore': [
-        [0, 0, 1920, 669],
-        [0, 808, 1920, 1088]
+        # [startX, startY, endX, endY]
     ]
 }
-prior_image = None
-
-detected_at = None
-filename = 'bla'
-cutoff = 0
 
 
 class SplitFrames(object):
     def __init__(self):
-        self.stream = io.BytesIO()
-        # when we detect a full frame of JPEG data, we'll copy out those bytes
         self.buf = None
-        self.count = 0
-        # let's only copy buffer data out to support 10fps streaming
-        self.cutoff = 0
-        self.delta = 0.3
 
     def write(self, buf):
         if not buf.startswith(b'\xff\xd8'):
             print('ERROR: buffer with JPEG data does not start with magic bytes')
 
-        # NOTE: until i see "buffer does not start with" happen, 
-        # let's just use the buffer picamera gives us instead of copying into our self.stream
+        # NOTE: Until i see "buffer does not start with magic bytes" actually happen, let's just use the buffer picamera gives us instead of copying into a BytesIO stream
         self.buf = buf
-        return
-
-        if buf.startswith(b'\xff\xd8'):
-            # Start of new frame; send the old one's length
-            # then the data
-            size = self.stream.tell()
-            if size > 0:
-                t = time.time()
-                if t > self.cutoff:
-                    #print('copying')
-                    # seek to beginning of data
-                    self.stream.seek(0)
-                    self.buf = self.stream.read(size)
-                    # then use it up to size
-                    streamer.httpd.still = self.buf
-                    self.cutoff = t + self.delta
-
-                # now rewind for writing again
-                self.stream.seek(0)
-        else:
-            # i've NEVER seen this happen
-            print('buffer does not start with')
-        self.stream.write(buf)
 
 class MotionDetection(threading.Thread):
     def __init__(self, camera, settings):
@@ -108,16 +68,17 @@ class MotionDetection(threading.Thread):
         self.motionAtTimestamp = 0
         self.checkAfterTimestamp = 0
         self.updateDetectStillAfterTimestamp = 0
-        # TODO: time.time() + 5 # wait 5 seconds before beginning motion detection
         self.stopRecordingAfterTimestamp = 0
         self.stopRecordingAfterTimestampDelta = 2
+
+        # TODO: re-try capturing straight to bgr instead of jpeg. it'll likely be slower since there will be more data to copy from the camera, and because we'll then have to encode to JPEG for the live stream. but worth another test.
 
         # for capturing to bgr
         #self.buffer = numpy.empty( (self.settings['width'] * self.settings['height'] * 3,), dtype=numpy.uint8)
         # set once ... since we're re-using the same buffer, we don't have to set it ever again
         #self.buffer.shape = (self.settings['height'], self.settings['width'], 3)
 
-        # for capturing as jpeg
+        # Create ndarrays ahead of time to reduce memory operations and GC
         self.buffer = SplitFrames()
         self.decoded = numpy.empty( (self.settings['height'], self.settings['width'], 3), dtype=numpy.uint8)
         self.grayscale = numpy.empty( (self.settings['height'], self.settings['width']), dtype=numpy.uint8)
@@ -132,17 +93,15 @@ class MotionDetection(threading.Thread):
         self.start()
 
     def config(self, settings):
-        # TODO: I'm fuzzy on this, fix it
         self.sensitivityPercentage = self.settings['sensitivityPercentage'] / 100
 
-        # 0.8% of white pixels signals motion
+        # 0.2% of white pixels signals motion
         cutoff = math.floor(self.settings['width'] * self.settings['height'] * self.sensitivityPercentage)
         # Pixels with motion will have a value of 255
-        # Sum of 1% of pixels having value of 255 is ...
+        # Sum the % of pixels having value of 255 to 
         self.cutoff = cutoff * 255
 
-        # assemble an ndarray of our ignore regions
-        # we'll multiply this by our current frame to zero-out pixels we want to ignore
+        # Assemble an ndarray of our ignore regions. We'll multiply this by our current frame to zero-out pixels we want to ignore
         for region in self.settings['ignore']:
             x = region[0]
             y = region[1]
@@ -165,21 +124,15 @@ class MotionDetection(threading.Thread):
             t = time.time()
             if t > cutoff:
                 # detection
-                print(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f'))
+                #print(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f'))
                 self._detect(t)
                 cutoff = t + self.settings['secondsBetweenDetection']
             self.camera.annotate_text = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     def _detect(self, currentFrameTimestamp):
-        #profile.begin('grayscale-diff-threshold')
         img_np = numpy.frombuffer(self.buffer.buf, dtype=numpy.uint8)
-        #numpyFrame = cv2.imdecode(img_np, cv2.IMREAD_COLOR)
         self.decoded = cv2.imdecode(img_np, cv2.IMREAD_COLOR)
-        #grayscale = cv2.cvtColor(numpyFrame, cv2.COLOR_BGR2GRAY)
         cv2.cvtColor(self.decoded, cv2.COLOR_BGR2GRAY, self.grayscale)
-        # curious what dimensions of grayscale are ... and whether they match our width/height
-        # and also wehther the size of this matches a normal WxHx3 byte array
-
 
         if self.previous is None:
             self.previous = numpy.empty( (self.settings['height'], self.settings['width']), dtype=numpy.uint8)
@@ -191,10 +144,6 @@ class MotionDetection(threading.Thread):
         # rely on numpy to ignore certain portions of the frame by multiplying those pixels by 0
         cv2.threshold(self.scratch, 25, 255, cv2.THRESH_BINARY, self.threshold)
 
-        result, encoded = cv2.imencode('.jpg', self.diff)
-        if result:
-            streamer.httpd.diff = encoded
-
         # Add up all pixels. Pixels with motion will have a value of 255
         pixelSum = numpy.sum(self.threshold)
         if pixelSum > self.cutoff: # motion detected in frame
@@ -205,10 +154,8 @@ class MotionDetection(threading.Thread):
             self.stopRecordingAfterTimestamp = currentFrameTimestamp + self.stopRecordingAfterTimestampDelta                        
             print('Seeing motion. Will stop recording after %s' % str(self.stopRecordingAfterTimestamp))
 
-            # NOTE: let's only update previousFrame if there's motion
-            # the thought is that we want to detect very slow moving objects ... objects that might not trigger 2% of pixel changes within 1/3 second
-            # but that might over a longer time frame
-            # Use current frame in next comparison
+            # Let's only use the current frame for detection if it contains motion.
+            # The thought is that we want to detect very slow moving objects ... objects that might not trigger 2% of pixel changes within 1/3 second but that might over a longer time frame.
             numpy.copyto(self.previous, self.grayscale)
         # End conditional frame comparison logic
 
@@ -216,7 +163,7 @@ class MotionDetection(threading.Thread):
             # Tell writer we haven't seen motion for a while
             print("%d seconds without motion" % self.stopRecordingAfterTimestampDelta)
 
-            # keep timestamp of last motion
+            # Commented out the following so we preserve the timestamp of last motion
             #self.motionAtTimestamp = 0
             # Log that we are no longer seeing motion
             self.motionDetected = False
@@ -227,12 +174,9 @@ class MotionDetection(threading.Thread):
         self.running = False
 
 
-mjpeg_outputs = []
 class requestHandler(http.server.BaseHTTPRequestHandler):
-    #def __init__(self):
-    #    http.server.BaseHTTPRequestHandler.__init__(self)
-
     def log_message(self, *args):
+        # Suppress the default behavior of logging every incoming HTTP request to stdout
         return
 
     def do_POST(self):
@@ -272,31 +216,6 @@ class requestHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write( json.dumps(data).encode() )
 
-        elif path == '/stream.mjpeg':
-            self.event = threading.Event()
-            self.running = True
-
-            # send headers
-            self.send_response(200)
-            self.send_header('Content-Type', 'multipart/x-mixed-replace; boundary=PICAM_MJPEG')
-            self.end_headers()
-
-            mjpeg_outputs.append(self)
-
-            while self.running:
-                self.event.wait()
-                self.event.clear()
-                if self.server.still:
-                    # this doesn't seem to work
-                    if self.wfile.closed or not self.wfile.writable():
-                        break
-                    try:
-                        self.wfile.write(b'--PICAM_MJPEG\nContent-Type: image/jpeg\n\n')
-                        self.wfile.write(self.server.still)
-                    except BrokenPipeError as e:
-                        break
-            mjpeg_outputs.remove(self)
-
         elif path == '/still.jpeg':
             if self.wfile.closed or not self.wfile.writable():
                 return
@@ -315,57 +234,8 @@ class requestHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(still)
             except BrokenPipeError as e:
                 print('BrokenPipeError')
-                # we don't care
-                a = True
             except ConnectionResetError as e:
-                print('COnnectionResetError')
-                # we don't care
-                a = True
-            return
-
-
-        elif path == '/grayscale.jpeg':
-            if self.wfile.closed or not self.wfile.writable():
-                return
-            if self.server.grayscale is None:
-                return False
-
-            still = self.server.grayscale
-
-            # send headers
-            self.send_response(200)
-            self.send_header('Content-Type', 'image/jpeg')
-            self.send_header('Content-Length', len(still))
-            self.end_headers()
-            # this doesn't seem to work
-            try:
-                self.wfile.write(still)
-            except BrokenPipeError as e:
-                # we don't care
-                a = True
-            except ConnectionResetError as e:
-                # we don't care
-                a = True
-            return
-
-
-        elif path == '/motion.jpeg':
-            if self.wfile.closed or not self.wfile.writable():
-                return
-            if self.server.motion is None:
-                return False
-            # send headers
-            self.send_response(200)
-            self.send_header('Content-Type', 'image/jpeg')
-            self.end_headers()
-
-            if self.server.still:
-                # this doesn't seem to work
-                try:
-                    self.wfile.write(self.server.motion)
-                except BrokenPipeError as e:
-                    print('brokenPipe2')
-                    return
+                print('ConnectionResetError')
 
         else:
             # TODO: return 404
@@ -377,7 +247,6 @@ class Streamer(threading.Thread):
         self.outputs = []
         self.httpd = http.server.HTTPServer(('0.0.0.0', 8080), requestHandler)
         self.httpd.still = None
-        self.httpd.motion = None
         self.start()
     
     def run(self):
@@ -386,17 +255,7 @@ class Streamer(threading.Thread):
     def done(self):
         print('Streamer exiting')
         self.httpd.shutdown()
-        for output in mjpeg_outputs:
-            output.running = False
-            output.event.set()
 
-class FrameHandler:
-    def __init__(self):
-        self.frames = []
-
-    def write(self, buf):
-        print(datetime.datetime())
-        self.frames.append(buf)
 
 def mergeConfig(o):
     global settings
@@ -415,7 +274,7 @@ def signal_handler(sig, frame):
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
-
+# Merge in settings from config.json
 if os.path.isfile('config.json'):
     with open('config.json', 'r') as f:
         settings = json.load(f)
@@ -431,12 +290,10 @@ with picamera.PiCamera() as camera:
     streamer = Streamer()
 
     stream = picamera.PiCameraCircularIO(camera, seconds=2)
-    # have a hunch that modifying the bitrate or quality doesn't jive with the circular buffer ... noticed buffer/cache values
-    # rising forever in top, and that makes me think mismatch or memory leak
-    camera.start_recording(stream, format='h264') #, bitrate=0, quality=20)
+    camera.start_recording(stream, format='h264')
     while running:
         try:
-            camera.wait_recording(0.1) #settings['secondsBetweenDetection'])
+            camera.wait_recording(0.1)
         except picamera.PiCameraError as e:
             print('Exception while recording to circular buffer')
             print(str(e))
@@ -444,34 +301,34 @@ with picamera.PiCamera() as camera:
 
         if motionDetection.motionDetected:
             print('Motion detected!')
-            # As soon as we detect motion, split the recording to
-            # record the frames "after" motion
+            # As soon as we detect motion, split and start recording to h264
+            # We'll save the circular buffer to h264 later, since it contains "before motion detected" frames
             filename = datetime.datetime.fromtimestamp(motionDetection.motionAtTimestamp).strftime('%Y%m%d%H%M%S_%%dx%%dx%%d') % (settings['width'], settings['height'], settings['fps'])   
             subfolder = 'h264/' + filename[0:8]
             pathlib.Path(subfolder).mkdir(parents=True, exist_ok=True)
 
             camera.split_recording('%s/%s_after.h264' % (subfolder, filename))
 
-            # Wait until motion is no longer detected, then split
-            # recording back to the in-memory circular buffer
-            # TODO: might need to do wait_recording somehow in detected()
+            # Wait until motion is no longer detected, then split recording back to the in-memory circular buffer
             while motionDetection.motionDetected:
                 if running == False:
                     break
                 try:
-                    camera.wait_recording(0.1) #settings['secondsBetweenDetection'])
+                    camera.wait_recording(0.1)
                 except picamera.PiCameraError as e:
                     print('Exception while recording to h264 file')
                     print(str(e))
-                    # Unsure how to handle full disk
+                    # TODO: Unsure how to handle full disk
                     break
             print('Motion stopped!')
 
             # Write the frames from "before" motion to disk as well
-            stream.copy_to('%s/%s_before.h264' % (subfolder, filename), seconds=2)
+            stream.copy_to('%s/%s_before.h264' % (subfolder, filename))
             stream.clear()
             camera.split_recording(stream)
     streamer.done()
     motionDetection.done()
+    # TODO: find the proper way to wait for threads to terminate
+    time.sleep(3)
     camera.stop_recording()
 
