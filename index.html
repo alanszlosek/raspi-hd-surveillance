@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta charset="utf-8" />
+<style>
+html, body, div,img {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+div {
+    width: 100%;
+}
+img {
+    display: block;
+    margin-left: auto;
+    margin-right: auto;
+    max-width: 100%;
+}
+#status {
+    height: 10px;
+}
+#nav {
+    background-color: #7cafc2;
+    display: grid;
+    grid-template-columns: auto auto auto;
+}
+#nav > div {
+    border-bottom: 3px solid #7cafc2;
+    color: #fff;
+    height: 3em;
+    line-height: 3em;
+    text-align: center;
+}
+#nav > div.success {
+    border-color: #f8f8f8;
+}
+</style>
+</head>
+<body>
+<div id="status">
+</div>
+<div id="nav">
+    <div data-handleClass="nav" data-action="slow">Slow</div>
+    <div data-handleClass="nav" data-action="play">Stream</div>
+    <div data-handleClass="nav" data-action="detect">Pixels</div>
+</div>
+<div>
+    <img src="/still.jpeg" id="img" />
+</div>
+<div id="config">
+	<input type="text" data-handle="secondsBetweenDetection" value="0.3" />
+	<button data-action="save">Save</button>
+</div>
+<script>
+var ajaxGet = function(url, callback) {
+    var request = new XMLHttpRequest();
+    request.open('GET', url, true);
+
+    request.addEventListener('load', function(event) {
+        var request = event.target;
+        if (request.status >= 200 && request.status < 400) {
+            // TODO: this is ugly
+            var error;
+            try {
+                var data = JSON.parse(request.responseText);
+            } catch (e) {
+                error = "JSON parse: " + e.message;
+            }
+            if (error) {
+                callback(error);
+            } else {
+                callback(null, data);
+            }
+        } else {
+            // We reached our target server, but it returned an error
+            callback('Did not get 20x or 30x HTTP status');
+        }
+    });
+
+    request.addEventListener('error', function(event) {
+        callback('GET failed. Did we lose connectivity?');
+    });
+
+    request.send();
+};
+var ajaxPost = function(url, data, callback) {
+	var request = new XMLHttpRequest();
+	request.open('POST', url, true);
+	request.setRequestHeader('Content-Type', 'application/json; charset=UTF-8');
+	request.addEventListener('load', function() {
+	    if (request.status >= 200 && request.status < 400) {
+		// Success!
+		var data = JSON.parse(request.responseText);
+		callback(null, data);
+	    } else {
+		// We reached our target server, but it returned an error
+		callback('Did not get 20x or 30x HTTP status');
+	    }
+	});
+
+	request.addEventListener('error', function(event) {
+	    callback('POST failed. Did we lose connectivity?');
+	});
+	request.send(JSON.stringify(data));
+};
+
+
+var tag = function(tagName, attributes, children) {
+    var element = document.createElement(tagName);
+    for (var i in attributes) {
+        element.setAttribute(i, attributes[i]);
+    }
+    // Convert text to text node
+    for (var i = 0; i < children.length; i ++) {
+        var node = children[i];
+        if (node == null) {
+            continue;
+        } else if (node instanceof Node) {
+        } else {
+            node = document.createTextNode(node);
+        }
+        element.appendChild(node);
+    }
+
+    return element;
+};
+var drawChildren = function(container, children) {
+    /*
+    More room for cool optimizations here:
+    - loop through current and desired children, compare using node types, merge differences if possible
+    */
+    // perhaps compare element ids
+
+    while (container.firstChild) {
+        container.removeChild(container.firstChild);
+    }
+    children.forEach(function(item) {
+        if (item == null) {
+            return;
+        }
+        container.appendChild(item);
+    });
+};
+
+var handles = {
+    img: document.getElementById('img')
+};
+
+var config = {
+    handles: {
+        container: document.getElementById('config')
+    },
+    init: function() {
+    },
+    save: function(target, e) {
+	var data = {
+	    secondsBetweenDetection: parseFloat(this.handles['secondsBetweenDetection'].value)
+	};
+	    console.log(data);
+	ajaxPost('/config.json', data, function(err, result) {
+	    if (err) {
+		console.log(err);
+	        return;
+	    }
+	    console.log(result);
+	});
+    }
+};
+	
+
+var nav = {
+    interval: null,
+    handles: {
+        container: document.getElementById('nav')
+    },
+    init: function() {
+        var self = this;
+        self.slow(document.querySelector('div[data-action="slow"]'));
+    },
+    _clearInterval: function() {
+        var self = this;
+        if (self.interval) {
+            clearInterval(self.interval);
+        }
+    },
+    play: function(target, e) {
+        var self = this;
+        self._selectTab(target, 'nav');
+        self._clearInterval();
+        handles.img.src = '/stream.mjpeg';
+    },
+
+    slow: function(target, e) {
+        var self = this;
+        self._selectTab(target, 'nav');
+        
+        self._clearInterval();
+        self.interval = setInterval(
+            function() {
+                handles.img.src = '/still.jpeg?t=' + Date.now();
+            },
+            100
+        );
+    },
+    detect: function(target, e) {
+        var self = this;
+        self._selectTab(target, 'nav');
+
+        self._clearInterval();
+        self.interval = setInterval(
+            function() {
+                handles.img.src = '/motion.jpeg?t=' + Date.now();
+            },
+            1000
+        );
+    },
+    _selectTab: function(el, handleClass) {
+        var self = this;
+        self.handles[handleClass].forEach(function(sibling) {
+            sibling.classList.remove('success');
+        });
+        el.classList.add('success');
+    }
+
+};
+
+var modules = [
+    nav,
+    config
+];
+var getHandles = function(obj) {
+    var container = obj.handles.container;
+    container.querySelectorAll('[data-handle]').forEach(function(el) {
+        obj.handles[ el.getAttribute('data-handle') ] = el;
+    });
+
+    container.querySelectorAll('[data-handleClass]').forEach(function(el) {
+        var handleClass = el.getAttribute('data-handleClass');
+        if (!(handleClass in obj.handles)) {
+            obj.handles[ handleClass ] = [];
+        }
+        obj.handles[ handleClass ].push(el);
+    });
+};
+modules.forEach(function(self) {
+    getHandles(self);
+    // automate this using data-action
+    self.handles.container.addEventListener('click', function(event) {
+        var target = event.target;
+        var action;
+        // go up a level if material icon was clicked
+        if (target.tagName == 'I') {
+            target = target.parentNode;
+        }
+        action = target.getAttribute('data-action');
+        if (action in self) {
+            self[action](target, event);
+        }
+    });
+    self.init();
+});
+
+
+
+
+var statusHandle = document.getElementById('status');
+setInterval(
+    function() {
+        ajaxGet('/status.json', function(error, data) {
+            if (error) {
+                console.log(error);
+                return;
+            }
+            var ts = Date.now() / 1000;
+            console.log(ts);
+            var cutoff = 3600.00;
+            var cutoff = 60 * 10; // yellow for 10 minutes
+            if (data.motion) {
+                document.body.style.backgroundColor = '#ab4642';
+            } else {
+                if (ts - data.motionAtTimestamp < cutoff) {
+                    document.body.style.backgroundColor = '#f7ca88';
+                } else {
+                    document.body.style.backgroundColor = 'white';
+                }
+            }
+        })
+    },
+    2000
+);
+
+handles.img.addEventListener('click', function(event) {
+    var target = event.target;
+    console.log(event.clientX - target.offsetLeft + window.scrollX);
+    console.log(event.clientY - target.offsetTop + window.scrollY);
+});
+</script>
+
+</body>
+</html>
+
