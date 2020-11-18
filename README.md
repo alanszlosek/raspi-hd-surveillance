@@ -2,7 +2,7 @@
 
 This is a python script to convert a Raspberry Pi 3, 4 or Zero into a motion detection surveillance system.
 
-With a raspi4 it can check for motion 3 times a second, output 1088p (not a typo) 30fps h264 files, all while keeping the CPU on a single core under 80%! This is a huge improvement over the previous version of this script. Hooray for picamera!
+With a raspi4 it can check for motion 3 times a second, output 1088p (not a typo, odd res is due to "binning") 30fps h264 files, all while keeping the CPU on a single core under 80%! This is a huge improvement over the previous version of this script. Hooray for picamera!
 
 It also serves a simple web UI (runs on port 8080) that allows you to watch the stream and see whether motion was detected. See a demo of the previous version here: https://www.youtube.com/watch?v=56VteHCRxhc
 
@@ -15,6 +15,8 @@ I need to create a new post for the latest version, but you can read about my jo
 * Encoding to h264
 * Live streaming
 * 1088p at 30fps on a raspi4
+
+Coming soon: tools for end-to-end monitoring system with object detection. See bottom of this readme, and coming-soon folder.
 
 # Installation
 
