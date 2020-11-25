@@ -11,6 +11,7 @@ import pathlib
 import random
 import picamera
 import signal
+import socket
 import subprocess
 import threading
 import time
@@ -31,7 +32,7 @@ settings = {
     'fps': 30,
     'width': 1920,
     'height': 1088,
-    # raspi zero settings (IIRC)
+    # raspi zero, and raspi3 settings (IIRC)
     #'fps': 30,
     #'width': 1280,
     #'height': 720,
@@ -39,8 +40,12 @@ settings = {
     'sensitivityPercentage': 0.2,
     # Check for motion at this interval. 0.3 (three times a second) is often frequent enough to pick up cars on a residential road, but it depends on many things. You'll need to fiddle.
     'secondsBetweenDetection': 0.3,
+    'heartbeatServer': '192.168.1.173',
+    'heartbeatPort': 5001,
     'ignore': [
         # [startX, startY, endX, endY]
+        [0, 0, 1920, 669],
+        [0, 808, 1920, 1088]
     ]
 }
 
@@ -256,6 +261,21 @@ class Streamer(threading.Thread):
         print('Streamer exiting')
         self.httpd.shutdown()
 
+class Heartbeat(threading.Thread):
+    def __init__(self, settings):
+        threading.Thread.__init__(self)
+        self.settings = settings
+        self.running = True
+        self.start()
+
+    def run(self):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        while self.running:
+            sock.sendto(b"hi", (self.settings['heartbeatServer'], self.settings['heartbeatPort']))
+            time.sleep(2)
+    def done(self):
+        self.running = False
+
 
 def mergeConfig(o):
     global settings
@@ -286,6 +306,7 @@ with picamera.PiCamera() as camera:
     camera.framerate = settings['fps']
     camera.annotate_background = picamera.Color(y=0, u=0, v=0)
 
+    heartbeat = Heartbeat(settings)
     motionDetection = MotionDetection(camera, settings)
     streamer = Streamer()
 
@@ -326,6 +347,7 @@ with picamera.PiCamera() as camera:
             stream.copy_to('%s/%s_before.h264' % (subfolder, filename))
             stream.clear()
             camera.split_recording(stream)
+    heartbeat.done()
     streamer.done()
     motionDetection.done()
     # TODO: find the proper way to wait for threads to terminate
