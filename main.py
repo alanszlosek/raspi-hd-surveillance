@@ -1,6 +1,7 @@
 import cv2
 import datetime
 import glob
+import gpiozero
 import http.server
 import io
 import json
@@ -8,8 +9,9 @@ import math
 import numpy
 import os
 import pathlib
-import random
 import picamera
+import random
+import requests
 import signal
 import socket
 import subprocess
@@ -32,7 +34,7 @@ settings = {
     'fps': 30,
     'width': 1920,
     'height': 1088,
-    # raspi zero, and raspi3 settings (IIRC)
+    # raspi zero settings (IIRC)
     #'fps': 30,
     #'width': 1280,
     #'height': 720,
@@ -261,20 +263,31 @@ class Streamer(threading.Thread):
         print('Streamer exiting')
         self.httpd.shutdown()
 
-class Heartbeat(threading.Thread):
+class Periodic(threading.Thread):
     def __init__(self, settings):
         threading.Thread.__init__(self)
         self.settings = settings
         self.running = True
         self.start()
 
+    def done(self):
+        self.running = False
+
+class Heartbeat(Periodic):
     def run(self):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         while self.running:
             sock.sendto(b"hi", (self.settings['heartbeatServer'], self.settings['heartbeatPort']))
             time.sleep(2)
-    def done(self):
-        self.running = False
+
+class Temperature(Periodic):
+    def run(self):
+        influx_url = 'http://%s:8086/write' % (self.settings['heartbeatServer'],)
+        while self.running:
+            cpu = gpiozero.CPUTemperature()
+            s = 'raspi.temperature_celsius,host=%s value=%f %d' % (socket.gethostname(), math.floor(cpu.temperature), time.time_ns())
+            r = requests.post(influx_url, params={'db': 'cube'}, data=s)
+            time.sleep(30)
 
 
 def mergeConfig(o):
@@ -307,6 +320,7 @@ with picamera.PiCamera() as camera:
     camera.annotate_background = picamera.Color(y=0, u=0, v=0)
 
     heartbeat = Heartbeat(settings)
+    temperature = Temperature(settings)
     motionDetection = MotionDetection(camera, settings)
     streamer = Streamer()
 
@@ -348,6 +362,7 @@ with picamera.PiCamera() as camera:
             stream.clear()
             camera.split_recording(stream)
     heartbeat.done()
+    temperature.done()
     streamer.done()
     motionDetection.done()
     # TODO: find the proper way to wait for threads to terminate
