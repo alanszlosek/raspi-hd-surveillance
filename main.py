@@ -1,16 +1,13 @@
 import cv2
 import datetime
-import glob
 import gpiozero
 import http.server
-import io
 import json
 import math
 import numpy
 import os
 import pathlib
 import picamera
-import random
 import requests
 import signal
 import socket
@@ -42,6 +39,9 @@ settings = {
     'sensitivityPercentage': 0.2,
     # Check for motion at this interval. 0.3 (three times a second) is often frequent enough to pick up cars on a residential road, but it depends on many things. You'll need to fiddle.
     'secondsBetweenDetection': 0.3,
+    # how many seconds of h264 to save prior to when motion is detected. this will be saved in a *_before.h264 file
+    'secondsToSaveBeforeMotion': 2,
+    'secondsToSaveAfterMotion': 2,
     'heartbeatServer': '192.168.1.173',
     'heartbeatPort': 5001,
     'ignore': [
@@ -63,10 +63,8 @@ class SplitFrames(object):
         # NOTE: Until i see "buffer does not start with magic bytes" actually happen, let's just use the buffer picamera gives us instead of copying into a BytesIO stream
         self.buf = buf
 
-class MotionDetection(threading.Thread):
-    def __init__(self, camera, settings):
-        threading.Thread.__init__(self)
-        self.running = True
+class MotionDetection:
+    def __init__(self, camera, settings, streamer):
         self.camera = camera
         self.settings = settings
 
@@ -76,18 +74,11 @@ class MotionDetection(threading.Thread):
         self.checkAfterTimestamp = 0
         self.updateDetectStillAfterTimestamp = 0
         self.stopRecordingAfterTimestamp = 0
-        self.stopRecordingAfterTimestampDelta = 2
-
-        # TODO: re-try capturing straight to bgr instead of jpeg. it'll likely be slower since there will be more data to copy from the camera, and because we'll then have to encode to JPEG for the live stream. but worth another test.
-
-        # for capturing to bgr
-        #self.buffer = numpy.empty( (self.settings['width'] * self.settings['height'] * 3,), dtype=numpy.uint8)
-        # set once ... since we're re-using the same buffer, we don't have to set it ever again
-        #self.buffer.shape = (self.settings['height'], self.settings['width'], 3)
+        self.stopRecordingAfterTimestampDelta = settings['secondsToSaveAfterMotion']
 
         # Create ndarrays ahead of time to reduce memory operations and GC
-        self.buffer = SplitFrames()
         self.decoded = numpy.empty( (self.settings['height'], self.settings['width'], 3), dtype=numpy.uint8)
+        streamer.httpd.still = self.decoded
         self.grayscale = numpy.empty( (self.settings['height'], self.settings['width']), dtype=numpy.uint8)
         self.previous = None
         self.diff = numpy.empty( (self.settings['height'], self.settings['width']), dtype=numpy.uint8)
@@ -97,12 +88,10 @@ class MotionDetection(threading.Thread):
 
         self.config(settings)
 
-        self.start()
-
     def config(self, settings):
         self.sensitivityPercentage = self.settings['sensitivityPercentage'] / 100
 
-        # 0.2% of white pixels signals motion
+        # N% of white pixels signals motion
         cutoff = math.floor(self.settings['width'] * self.settings['height'] * self.sensitivityPercentage)
         # Pixels with motion will have a value of 255
         # Sum the % of pixels having value of 255 to 
@@ -115,30 +104,24 @@ class MotionDetection(threading.Thread):
             while y < region[3]:
                 self.ignore[y, x:region[2]] = 0
                 y += 1
-
-
-    def run(self):
+    
+    def check(self):
         global streamer
         self.camera.annotate_text = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        t = time.time()
-        cutoff = t + self.settings['secondsBetweenDetection']
-        for foo in self.camera.capture_continuous(self.buffer, format='jpeg', use_video_port=True, quality=100):
-            if self.running == False:
-                break
 
-            streamer.httpd.still = self.buffer.buf
-
+        try:
+            # TODO: capture into a buffer not shared with the http streamer ...
+            # as-is we can have race-conditions
+            self.camera.capture(self.decoded, format='bgr', use_video_port=True)
             t = time.time()
-            if t > cutoff:
-                # detection
-                #print(datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f'))
-                self._detect(t)
-                cutoff = t + self.settings['secondsBetweenDetection']
-            self.camera.annotate_text = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            print('Checking for motion')
+            self._detect(t)
+
+        except Exception as e:
+            print('Exception within capture_continuous, bailing')
+            print(str(e))
 
     def _detect(self, currentFrameTimestamp):
-        img_np = numpy.frombuffer(self.buffer.buf, dtype=numpy.uint8)
-        self.decoded = cv2.imdecode(img_np, cv2.IMREAD_COLOR)
         cv2.cvtColor(self.decoded, cv2.COLOR_BGR2GRAY, self.grayscale)
 
         if self.previous is None:
@@ -174,11 +157,6 @@ class MotionDetection(threading.Thread):
             #self.motionAtTimestamp = 0
             # Log that we are no longer seeing motion
             self.motionDetected = False
-
-
-    def done(self):
-        print('MotionDetection exiting')
-        self.running = False
 
 
 class requestHandler(http.server.BaseHTTPRequestHandler):
@@ -229,7 +207,8 @@ class requestHandler(http.server.BaseHTTPRequestHandler):
             if self.server.still is None:
                 return False
 
-            still = self.server.still
+            # TODO: race condition alert. should not use a buffer that's being actively used by MotionDetection
+            still = cv2.imencode('.jpg', self.server.still)[1]
 
             # send headers
             self.send_response(200)
@@ -321,19 +300,29 @@ with picamera.PiCamera() as camera:
 
     heartbeat = Heartbeat(settings)
     temperature = Temperature(settings)
-    motionDetection = MotionDetection(camera, settings)
     streamer = Streamer()
+    motionDetection = MotionDetection(camera, settings, streamer)
 
-    stream = picamera.PiCameraCircularIO(camera, seconds=2)
+    # See stream.copy_to() usage below for why I'm creating a larher buffer
+    stream = picamera.PiCameraCircularIO(camera, seconds = settings['secondsToSaveBeforeMotion'] * 2)
     camera.start_recording(stream, format='h264')
     while running:
         try:
-            camera.wait_recording(0.1)
+            # Need a better way to do this, based on how long capture() actually/usually takes
+            # Hardcoded this to 0.1 for now, since capture() is slow and I want detection 3x per second
+            camera.wait_recording(0.1) #settings['secondsBetweenDetection'])
         except picamera.PiCameraError as e:
             print('Exception while recording to circular buffer')
             print(str(e))
             break
-
+        except Exception as e:
+            print('Non PiCamera exception while recording to circular buffer')
+            print(str(e))
+            break
+    
+        # TODO: return boolean from check instead of reaching into motionDetection.motionDetected
+        motionDetection.check()
+    
         if motionDetection.motionDetected:
             print('Motion detected!')
             # As soon as we detect motion, split and start recording to h264
@@ -342,29 +331,61 @@ with picamera.PiCamera() as camera:
             subfolder = 'h264/' + filename[0:8]
             pathlib.Path(subfolder).mkdir(parents=True, exist_ok=True)
 
-            camera.split_recording('%s/%s_after.h264' % (subfolder, filename))
+            try:
+                camera.split_recording('%s/%s_after.h264' % (subfolder, filename))
+            except picamera.PiCameraError as e:
+                print('Exception while calling split_recording')
+                print(str(e))
+                break
+            except Exception as e:
+                print('Non PiCamera exception while calling split_recording')
+                print(str(e))
+                break
 
             # Wait until motion is no longer detected, then split recording back to the in-memory circular buffer
             while motionDetection.motionDetected:
                 if running == False:
                     break
                 try:
-                    camera.wait_recording(0.1)
+                    camera.wait_recording(1.0)
                 except picamera.PiCameraError as e:
                     print('Exception while recording to h264 file')
                     print(str(e))
                     # TODO: Unsure how to handle full disk
                     break
+                except Exception as e:
+                    print('Non PiCamera exception while calling split_recording')
+                    print(str(e))
+                    break
+                motionDetection.check()
             print('Motion stopped!')
 
             # Write the frames from "before" motion to disk as well
-            stream.copy_to('%s/%s_before.h264' % (subfolder, filename))
+            try:
+                # The reason I'm explicitly specifying seconds here is that according to the documentation,
+                # even if you create a circular buffer to hold 2 seconds, that's the lower bound. It might hold more
+                # depending on how much has changed between frames. Sounds like it allocates by bitrate behind the scenes,
+                # and truncates based on bytes within the buffer. So if some frames have less data it'll be able to pack more into the buffer
+                stream.copy_to('%s/%s_before.h264' % (subfolder, filename), seconds = settings['secondsToSaveBeforeMotion'])
+            except Exception as e:
+                print('Exception while calling copy_to')
+                print(str(e))
+                break
             stream.clear()
-            camera.split_recording(stream)
+
+            try:
+                camera.split_recording(stream)
+            except picamera.PiCameraError as e:
+                print('Exception while calling split_recording (2)')
+                print(str(e))
+                break
+            except Exception as e:
+                print('Non PiCamera exception while calling split_recording (2)')
+                print(str(e))
+                break
     heartbeat.done()
     temperature.done()
     streamer.done()
-    motionDetection.done()
     # TODO: find the proper way to wait for threads to terminate
     time.sleep(3)
     camera.stop_recording()
